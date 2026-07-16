@@ -2430,7 +2430,7 @@ local GLOBAL_ENV = getgenv and getgenv() or _G or shared
 --- @field mode string -- Valid modes: full, optimized, scripts. Change this to invalid mode like "invalid" if you only want ExtraInstances. "optimized" mode is **NOT** supported with *@Object* option. ___Default:___ `"optimized"`
 --- @field Decompile boolean -- Script decompiling. ___Default:___ true
 --- @field PythiaDecompiler boolean -- Uses the local Pythia decompiler service instead of the executor's built-in `decompile`. Requires `getscriptbytecode`, Base64 encoding, and WebSocket support. ___Default:___ true
---- @field PythiaEndpoint string -- WebSocket address for the Pythia decompiler service. ___Default:___ `"ws://127.0.0.1:9002"`
+--- @field PythiaEndpoint string -- WebSocket address for the Pythia decompiler service. Uses Android Emulator host loopback by default; override it for other emulators. ___Default:___ `"ws://10.0.2.2:9002"`
 --- @field scriptcache boolean -- Use decompiled script cache to avoid decompiling duplicate scripts. ___Default:___ true
 --- @field DecompileTimeout number -- If the decompilation run time exceeds this value it gets cancelled. Set to -1 to disable timeout (unreliable). ___Default:___ 10
 --- @field DecompileJobless boolean -- Includes already decompiled code in the output. No new scripts are decompiled. ___Default:___ false
@@ -2534,7 +2534,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 		mode = "optimized",
 		Decompile = EXECUTOR_NAME ~= "Velocity", -- TODO Temp fix for crashes
 		PythiaDecompiler = true,
-		PythiaEndpoint = "ws://127.0.0.1:9002",
+		PythiaEndpoint = "ws://10.0.2.2:9002",
 		scriptcache = true,
 		-- decomptype = "",
 		DecompileTimeout = 10,
