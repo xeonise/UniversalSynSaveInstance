@@ -4710,6 +4710,9 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 
 		if BinaryState then
 			local output = BinaryState:Build()
+			-- Binary saves bypass the XML chunk cache, so account for the completed
+			-- buffer here. This drives the progress and final-size UI.
+			totalsize = #output
 			local Callback = OPTIONS.Callback
 			if Callback then
 				Callback(output, { output })

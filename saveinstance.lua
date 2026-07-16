@@ -4710,6 +4710,9 @@ __DARKLUA_CONTINUE_99=true until true if not __DARKLUA_CONTINUE_99 then break en
 
 		if BinaryState then
 			local output = BinaryState:Build()
+			-- Binary saves bypass the XML chunk cache, so account for the completed
+			-- buffer here. This drives the progress and final-size UI.
+			totalsize = #output
 			local Callback = OPTIONS.Callback
 			if Callback then
 				Callback(output, { output })
