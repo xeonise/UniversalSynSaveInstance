@@ -1,144 +1,66 @@
-<p align="center">
-  <img height="400px" style="margin: 0; padding: 0" src=".moonwave\static\logo.png" />
-</p>
+# UniversalSynSaveInstance
 
+Save the current Roblox data model as a place or model file.
 
-# Loadstring
+Binary output is enabled by default:
 
-```lua
-local Params = {
- RepoURL = "https://raw.githubusercontent.com/luau/UniversalSynSaveInstance/main/",
- SSI = "saveinstance",
-}
-local synsaveinstance = loadstring(game:HttpGet(Params.RepoURL .. Params.SSI .. ".luau", true), Params.SSI)()
-local Options = {} -- Documentation here https://luau.github.io/UniversalSynSaveInstance/api/SynSaveInstance
-synsaveinstance(Options)
+- Places: `.rbxl`
+- Models: `.rbxm`
+
+Use `Binary = false` only when you specifically need XML output (`.rbxlx` or `.rbxmx`).
+
+## Run
+
+```luau
+local saveinstance = loadstring(game:HttpGet(
+	"https://raw.githubusercontent.com/xeonise/UniversalSynSaveInstance/main/saveinstance.luau",
+	true
+), "saveinstance")()
+
+saveinstance({
+	SafeMode = false,
+	Binary = true,
+})
 ```
 
-# Universal Syn Save Instance
+Add a revision query when testing a newly pushed version:
 
-Or shortly USSI, a project aimed at resurrecting saveinstance function from Synapse X.<br />
-Reason: Many tools fail miserably at providing good user experience when it comes to tinkering with saving instances.
+```luau
+"https://raw.githubusercontent.com/xeonise/UniversalSynSaveInstance/main/saveinstance.luau?rev=main"
+```
 
-> [!WARNING]
-> As stated under the Section 7 (b) in the LICENSE:
-> - You **MUST** always include the following Credit string: `UniversalSynSaveInstance https://discord.gg/wx4ThpAsmw`
-> - You are **NOT** allowed to claim authorship of the source code provided in this repository
-> - You **MUST** always include the following [License](https://github.com/luau/UniversalSynSaveInstance/blob/main/LICENSE)
+## Common options
 
-## Disclaimer
+```luau
+saveinstance({
+	Binary = true,          -- `.rbxl` / `.rbxm`; default
+	SafeMode = false,       -- avoid automatic kick/disconnect handling
+	IsModel = false,        -- save a place; set true for an `.rbxm`
+	FilePath = "my-place", -- optional output name/path
+	Object = workspace,     -- optional instance to save as a model
+})
+```
 
-This project is provided for development, debugging, archival, and research purposes within the Roblox platform.
+`Callback` can be supplied instead of writing a file:
 
-It is not intended for misuse, including violating platform rules, unauthorized access, or redistribution of content without permission.
+```luau
+saveinstance({
+	Callback = function(contents)
+		print("Generated", #contents, "bytes")
+	end,
+})
+```
 
-Users are responsible for ensuring their usage complies with all applicable rules, including Roblox’s Terms of Use.
+## Current binary support
 
-The maintainers do not support or condone misuse of this software and are not responsible for how it is used.
+The RBXL writer uses uncompressed RBXL v0 chunks, which Roblox Studio can open and recompress. It supports current `Content`, legacy `ContentId`, `SecurityCapabilities`, shared strings, references, color sequences, and common Roblox value types.
 
-> [!TIP]
-> Important part about this saveinstance is that it doesn't modify game state, which helps maintain stability and compatibility.<br />
-> You can also enable the `SafeMode` option to improve compatibility and ensure more reliable saving across a wide range of experiences.<br /><br /> You can read more about it here [Documentation]
-> If this script is helpful to you, please click `⭐ Star` in the upper right corner of the page to support it, thank you!
+## Limitations
 
-# Documentation
+- Terrain voxel data is executor-dependent. If the log says Terrain was skipped because its hidden data could not be read, the output will not include Terrain.
+- Opaque/external `Content` sources cannot be reconstructed through public reflection and are omitted.
+- `Instance.HistoryId` is intentionally skipped to avoid save-to-save diff noise.
 
-[Documentation]
+## Credits and license
 
-# 💖 Support Us & Our Work
-
-<a href='https://ko-fi.com/M4M1JNH5G' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi2.png?v=3' border='0' alt='Buy Me a Coffee at ko-fi.com' title='KO-FI' /></a>
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M1JNH5G "KO-FI")
-<br />
-[![ko-fi](https://user-images.githubusercontent.com/95628489/231759262-25661006-b7ca-4967-a79d-2b465cd9575a.png)](https://ko-fi.com/M4M1JNH5G "KO-FI QR-CODE")
-
-# DISCORD SERVER:<br />
-
-<https://discord.com/invite/wx4ThpAsmw> **/** <https://discord.gg/wx4ThpAsmw><br />
-[<img src="https://discordapp.com/api/guilds/1022465460517740654/widget.png?style=banner2" alt="Our Official Discord Server!"></img>](https://discord.com/invite/wx4ThpAsmw)<br />
-
-# TO-DOs
-
-- [x] Native binary format output (`.rbxl` / `.rbxm`)
-  - Binary output is enabled by default. Set `Binary = false` only when an XML workflow is required.
-  - The writer produces standard uncompressed RBXL v0 chunks. Studio accepts uncompressed chunks and can recompress them on its next save.
-  - The file metadata includes `USSI_BinaryWriter=2`, which makes it possible to tell an older cached script from the current serializer.
-  - Writer v2 handles modern `Content` (URI and instance-reference sources), legacy `ContentId`, `SecurityCapabilities`, shared strings, and color sequences using their current binary type tags. `Instance.HistoryId` remains intentionally skipped to avoid save-to-save diff noise.
-  - `Content` values with opaque external sources and Terrain voxel data cannot be read through every executor API. They are omitted rather than written with invalid binary data.
-- [ ] Add table.clone instead {} in some cases if possible
-- [ ] Support for Model files:
-  - [x] rbxmx (xml)
-  - [x] rbxm (binary)
-- [x] Implement [Luau Syntax] (important for performance!):
-  - [x] Compound Operators
-  - [x] Avoid using `next`, `ipairs` & `pairs`
-  - [x] ~~Interpolated strings instead of concat~~ Slower
-  - [ ] Type-checking (😩🙀)
-  - [ ] ~~`if-then-else` expressions~~ No reason to
-  - [ ] Floor division
-
-- [ ] Speed things up as much as possible
-  - Requires benchmarks
-- [ ] Support for as many [KRNL-like saveinstance Options] & [UNC]:
-  - Change mode to invalid mode like "custom" if you only want to save ExtraInstances
-  * [x] Decompile (! This takes priority over OPTIONS.noscripts if set !)
-  * [x] DecompileIgnore
-  * [x] DecompileTimeout (! This takes priority over OPTIONS.timeout if set !)
-  * [x] ExtraInstances
-  * [x] FilePath
-  * [x] IgnoreDefaultProps
-  * [x] IsolateStarterPlayer
-  * [x] NilInstances
-  * [x] Object (for .rbxmx files)
-  * [x] RemovePlayerCharacters
-  * [x] SavePlayers
-  * [x] ShowStatus
-    - [x] ~~Add Drawing Library support for ShowStatus~~ Can't reliably test if it's working on a tool
-  * [x] IsolatePlayerGui (same as IsolateLocalPlayer)
-  * [x] Callback
-  * [x] ~~CopyToClipboard/Clipboard~~ Use Callback instead
-  * [x] Binary (rbxl/rbxm)
-- [x] ~~Remove buffersize, savebuffer & so on for sake of performance by concatenating <Item> strings to total string then writing it to file (no extra steps like table.concat)~~ table.concat proved faster in the case of huge amount of concatenations
-  - Test table.concat vs string ..= with a full buffer (this benchmark differs per usecase)
-- [ ] Add Option to restart saveinstance from the point that it crashed on (perhaps by skipping)
-- [ ] Maybe modes should do more than just determining the list of instances to save, like changing IgnoreDefaultProperties to false if mode is "full" for example
-- [x] Add Lua & Luau versions instead of merged (WARNING: LUAU MIGHT BE MORE UPDATED THAN LUA VERSION, lua version exists just for the sake of old & bad tools, ask devs of your tools to support luau as its latest & greatest)
-- [x] ~~Add Support for multiple Instances to be saved as a model~~ IsModel = true & ExtraInstances
-- [ ] Force disable ParticleEmitters in case something like IgnorePropertiesOfNotScriptsOnScriptsMode is enabled (they stack in one place and create huge lag)
-- [ ] Be able to specify which special properties you want saved (to avoid saving all)
-
-# Acknowledgments
-> [!IMPORTANT]
-> This document is based largely on the efforts of [@Anaminus] & [@Dekkonot], authors of the [Roblox Format Specifications]. Additional
-resources include:
-> 
-> - [Syngp Synapse X Source code 2019][Synapse X Source 2019] for base saveinstance code (extended by [@mblouka] & [@Acrillis])
-> - [Moon/LorekeeperZinnia][@LorekeeperZinnia] for being the original creator of saveinstance that was used in Synapse X, Elysian and many others. As well as being an inspiration for this project.
-> - [Rojo Rbx Dom Xml] for being a fallback documentation in case something wasn't clear in the [Roblox Format Specifications]
-> - [Roblox File Format] for a list of redirects of old/deprecated xml properties that still use the old tag values
-> - [Roblox Client Tracker] for an extended & close to full JSON Api Dump (with hidden properties & default values)
-
-\*\*\* View source code of this file for more credits
-
-[Documentation]: https://luau.github.io/UniversalSynSaveInstance/api/SynSaveInstance
-[@Acrillis]: https://github.com/Acrillis
-[@Anaminus]: https://github.com/Anaminus
-[@Dekkonot]: https://github.com/Dekkonot
-[@mblouka]: https://github.com/mblouka
-[@LorekeeperZinnia]: https://github.com/LorekeeperZinnia
-[bit32]: https://create.roblox.com/docs/reference/engine/libraries/bit32
-[buffer]: https://create.roblox.com/docs/reference/engine/libraries/buffer
-[pack]: https://create.roblox.com/docs/reference/engine/libraries/string#pack
-[unpack]: https://create.roblox.com/docs/reference/engine/libraries/string#unpack
-[string]: https://create.roblox.com/docs/reference/engine/libraries/string
-[KRNL-like saveinstance Options]: https://app.archbee.com/public/PREVIEW-2Jp4SDaAD4P1COFfx1p_t/PREVIEW-EtjA4sQe5zYUxIHwA6CqJ#mDB9D
-[Rojo Rbx Dom Xml]: https://github.com/rojo-rbx/rbx-dom/blob/master/docs/xml.md
-[Rojo Rbx Dom Binary]: https://github.com/rojo-rbx/rbx-dom/blob/master/docs/binary.md
-[Luau Syntax]: https://luau-lang.org/syntax
-[Rbx-Binary-Format]: https://github.com/Dekkonot/rbx-binary-format/blob/master/src/writer.lua
-[Roblox Client Tracker]: https://github.com/MaximumADHD/Roblox-Client-Tracker
-[Roblox File Format]: https://github.com/MaximumADHD/Roblox-File-Format
-[Roblox Format Specifications]: https://github.com/RobloxAPI/spec/
-[Roblox Format Specifications Binary]: https://github.com/RobloxAPI/spec/blob/master/formats/rbxl.md
-[Synapse X Source 2019]: https://github.com/Acrillis/SynapseX
-[UNC]: https://github.com/unified-naming-convention/NamingStandard/commit/613c1956b801ace54ba141dfc60842a16608b54f
+This project builds on the work of Moon/LorekeeperZinnia, Anaminus, Dekkonot, Synapse X contributors, Rojo, and the Roblox Client Tracker. See [LICENSE](LICENSE) for terms.
