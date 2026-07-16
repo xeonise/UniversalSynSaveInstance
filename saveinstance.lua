@@ -1195,6 +1195,9 @@ local function NewBinaryPlaceWriter(modelMode)
 		BinaryString = 0x01,
 		ProtectedString = 0x01,
 		Content = 0x01,
+		-- ContentId is the legacy reflection name for the on-disk Content
+		-- representation. RBXL stores both as a type-1 length-prefixed string.
+		ContentId = 0x01,
 		bool = 0x02,
 		boolean = 0x02,
 		int = 0x03,
@@ -1267,7 +1270,7 @@ local function NewBinaryPlaceWriter(modelMode)
 	end
 
 	local function encodeValues(kind, values, refOf, shared)
-		if kind == "string" or kind == "BinaryString" or kind == "ProtectedString" or kind == "Content" then
+		if kind == "string" or kind == "BinaryString" or kind == "ProtectedString" or kind == "Content" or kind == "ContentId" then
 			local out = table.create(#values)
 			for i, value in values do out[i] = stringValue(value) end
 			return table.concat(out)
