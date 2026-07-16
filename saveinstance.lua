@@ -1244,7 +1244,7 @@ local function NewBinaryPlaceWriter(modelMode)
 	end
 
 	local function encodeCFrames(values)
-		local rotations, matrices, positions = table.create(#values), {}, table.create(#values)
+		local transforms, positions = table.create(#values), table.create(#values)
 		for i, value in values do
 			value = value or CFrame.new()
 			local x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 = value:GetComponents()
@@ -1258,13 +1258,16 @@ local function NewBinaryPlaceWriter(modelMode)
 			buffer.writef32(rotationBuffer, 28, r21)
 			buffer.writef32(rotationBuffer, 32, r22)
 			local id = CFrame_Rotation_IDs[buffer.tostring(rotationBuffer)] or 0
-			rotations[i] = u8(id)
+			local transform = { u8(id) }
 			if id == 0 then
-				matrices[#matrices + 1] = f32le(r00) .. f32le(r01) .. f32le(r02) .. f32le(r10) .. f32le(r11) .. f32le(r12) .. f32le(r20) .. f32le(r21) .. f32le(r22)
+				-- A rotation ID is immediately followed by its full matrix when it
+				-- is zero; it is not a separate, interleaved ID array.
+				transform[#transform + 1] = f32le(r00) .. f32le(r01) .. f32le(r02) .. f32le(r10) .. f32le(r11) .. f32le(r12) .. f32le(r20) .. f32le(r21) .. f32le(r22)
 			end
+			transforms[i] = table.concat(transform)
 			positions[i] = { x = x, y = y, z = z }
 		end
-		return table.concat(rotations) .. table.concat(matrices) .. interleave(positions, 12, function(v)
+		return table.concat(transforms) .. interleave(positions, 12, function(v)
 			return rfloat(v.x) .. rfloat(v.y) .. rfloat(v.z)
 		end)
 	end
@@ -1374,7 +1377,7 @@ local function NewBinaryPlaceWriter(modelMode)
 			return interleave(values, 4, function(v) return be32(shared(v or "")) end)
 		elseif kind == "OptionalCoordinateFrame" then
 			local present, cframes = table.create(#values), table.create(#values)
-			for i, v in values do present[i], cframes[i] = v ~= nil, v end
+			for i, v in values do present[i], cframes[i] = v ~= nil and v ~= false, v end
 			return u8(TYPE.CFrame) .. encodeCFrames(cframes) .. u8(TYPE.bool) .. encodeValues("bool", present, refOf, shared)
 		elseif kind == "Font" then
 			local out = table.create(#values)
@@ -1442,7 +1445,12 @@ local function NewBinaryPlaceWriter(modelMode)
 			table.sort(names)
 			for _, propertyName in names do
 				local kind; for _, record in group do local property = record.Properties[propertyName]; if property then kind = property.Kind; break end end
-				local values = table.create(#group); for i, record in group do local property = record.Properties[propertyName]; values[i] = property and property.Value or nil end
+				-- Each PROP chunk has one value per member of its class group.  A
+				-- property may be unreadable on just one instance, so preserve the
+				-- array length with a false sentinel; each encoder maps it to that
+				-- type's zero/default representation.  Leaving a nil hole makes Luau's
+				-- iterator skip the element and corrupts the interleaved binary arrays.
+				local values = table.create(#group); for i, record in group do local property = record.Properties[propertyName]; values[i] = property and property.Value or false end
 				local encoded = encodeValues(kind, values, refOf, shared)
 				if encoded then chunk("PROP", le32(classIds[name]) .. stringValue(propertyName) .. u8(TYPE[kind]) .. encoded) end
 			end
