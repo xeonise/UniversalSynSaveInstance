@@ -1343,7 +1343,12 @@ local function NewBinaryPlaceWriter(modelMode)
 				local result = { le32(#keypoints) }
 				for _, key in keypoints do
 					if kind == "NumberSequence" then table.insert(result, f32le(key.Time) .. f32le(key.Value) .. f32le(key.Envelope))
-					else local c = key.Value; table.insert(result, f32le(key.Time) .. f32le(c.R) .. f32le(c.G) .. f32le(c.B) .. f32le(key.Envelope)) end
+					else
+						-- ColorSequenceKeypoint has no Envelope property. RBXL reserves
+						-- the field anyway, so use the required dummy value.
+						local c = key.Value
+						table.insert(result, f32le(key.Time) .. f32le(c.R) .. f32le(c.G) .. f32le(c.B) .. f32le(0))
+					end
 				end
 				out[i] = table.concat(result)
 			end
