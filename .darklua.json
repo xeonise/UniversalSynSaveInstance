@@ -1,0 +1,5 @@
+{
+  "rules": [
+    "remove_compound_assignment"
+  ]
+}

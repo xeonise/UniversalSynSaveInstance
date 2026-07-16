@@ -1107,6 +1107,7 @@ end
 -- them on its next save.
 local function NewBinaryPlaceWriter(modelMode)
 	local U32 = 0x100000000
+	local WRITER_VERSION = "2"
 	local function u8(n)
 		return string.char(n % 0x100)
 	end
@@ -1190,14 +1191,55 @@ local function NewBinaryPlaceWriter(modelMode)
 			return zint(delta, true)
 		end)
 	end
+	-- Luau numbers cannot represent every signed 64-bit integer exactly.  Keep the
+	-- high and low words separate so SecurityCapabilities (which uses bits 0-63)
+	-- and UniqueId do not silently lose their upper bits before zig-zag encoding.
+	local function signedNumberWords(value)
+		value = type(value) == "number" and math.floor(value) or 0
+		if value >= 0 then
+			return math.floor(value / U32) % U32, value % U32
+		end
+		local magnitude = -value
+		local high, low = math.floor(magnitude / U32) % U32, magnitude % U32
+		high, low = U32 - 1 - high, U32 - 1 - low
+		low =low+ 1
+		if low >= U32 then high, low = (high + 1) % U32, 0 end
+		return high, low
+	end
+	local function zigzag64(high, low)
+		local shiftedHigh = (high * 2 + math.floor(low / 0x80000000)) % U32
+		local shiftedLow = (low * 2) % U32
+		if high >= 0x80000000 then
+			shiftedHigh, shiftedLow = U32 - 1 - shiftedHigh, U32 - 1 - shiftedLow
+		end
+		return be32(shiftedHigh) .. be32(shiftedLow)
+	end
+	local function capabilityWords(value)
+		if value == nil or value == false or value == BASE_CAPABILITIES then return 0, 0 end
+		local high, low = 0, 0
+		for _, flag in string.split(tostring(value), " | ") do
+			local capability = CAPABILITY_BITS[flag]
+			if capability then
+				if capability >= U32 then high =high+ capability / U32 else low =low+ capability end
+			end
+		end
+		high =high+ math.floor(low / U32)
+		return high % U32, low % U32
+	end
+	local function property(value, name, default)
+		local ok, result = pcall(index, value, name)
+		return ok and result or default
+	end
 	local TYPE = {
 		string = 0x01,
 		BinaryString = 0x01,
 		ProtectedString = 0x01,
-		Content = 0x01,
-		-- ContentId is the legacy reflection name for the on-disk Content
-		-- representation. RBXL stores both as a type-1 length-prefixed string.
+		-- ContentId is the legacy, string-backed asset reference type. Modern
+		-- Content has a different codec (0x22) with URI and object sources.
 		ContentId = 0x01,
+		Tags = 0x01,
+		Attributes = 0x01,
+		MaterialColors = 0x01,
 		bool = 0x02,
 		boolean = 0x02,
 		int = 0x03,
@@ -1228,9 +1270,12 @@ local function NewBinaryPlaceWriter(modelMode)
 		Color3uint8 = 0x1A,
 		int64 = 0x1B,
 		SharedString = 0x1C,
+		NetAssetRef = 0x1C,
 		OptionalCoordinateFrame = 0x1E,
+		UniqueId = 0x1F,
 		Font = 0x20,
 		SecurityCapabilities = 0x21,
+		Content = 0x22,
 	}
 
 	local function typeName(valueType, category)
@@ -1272,10 +1317,36 @@ local function NewBinaryPlaceWriter(modelMode)
 	end
 
 	local function encodeValues(kind, values, refOf, shared)
-		if kind == "string" or kind == "BinaryString" or kind == "ProtectedString" or kind == "Content" or kind == "ContentId" then
+		if kind == "string" or kind == "BinaryString" or kind == "ProtectedString" or kind == "ContentId" or kind == "Tags" or kind == "Attributes" or kind == "MaterialColors" then
 			local out = table.create(#values)
 			for i, value in values do out[i] = stringValue(value) end
 			return table.concat(out)
+		elseif kind == "Content" then
+			-- Modern Content is stored as three parallel collections: a source type
+			-- for every value, URI payloads, and object reference payloads.  Opaque
+			-- external sources cannot be reconstructed through public reflection, so
+			-- write them as None instead of emitting a malformed Content record.
+			local sourceTypes, uris, objects = table.create(#values), {}, {}
+			for i, value in values do
+				local sourceType = value and property(value, "SourceType", nil)
+				local sourceName = sourceType and property(sourceType, "Name", tostring(sourceType))
+				if type(value) == "string" or sourceName == "Uri" then
+					sourceTypes[i], uris[#uris + 1] = 1, type(value) == "string" and value or rawString(value)
+				elseif sourceName == "Object" then
+					sourceTypes[i], objects[#objects + 1] = 2, property(value, "Object", nil)
+				else
+					sourceTypes[i] = 0
+				end
+			end
+			local result = { interleave(sourceTypes, 4, function(v) return zint(v, true) end), le32(#uris) }
+			for _, uri in uris do result[#result + 1] = stringValue(uri) end
+			result[#result + 1] = le32(#objects)
+			local objectRefs = table.create(#objects)
+			for i, object in objects do objectRefs[i] = object and refOf[object] or -1 end
+			result[#result + 1] = references(objectRefs)
+			-- External Content sources are not exposed by the executor API.
+			result[#result + 1] = le32(0)
+			return table.concat(result)
 		elseif kind == "bool" or kind == "boolean" then
 			local out = table.create(#values)
 			for i, value in values do out[i] = u8(value and 1 or 0) end
@@ -1374,15 +1445,23 @@ local function NewBinaryPlaceWriter(modelMode)
 			end)
 		elseif kind == "int64" or kind == "SecurityCapabilities" then
 			return interleave(values, 8, function(v)
-				v = v or 0; if kind == "SecurityCapabilities" and typeof(v) == "SecurityCapabilities" then v = __COUNT_CAPABILITY_BITS(v) end
-				local n = v >= 0 and v * 2 or -v * 2 - 1; return be32(math.floor(n / U32)) .. be32(n % U32)
+				local high, low
+				if kind == "SecurityCapabilities" and typeof(v) == "SecurityCapabilities" then high, low = capabilityWords(v)
+				else high, low = signedNumberWords(v) end
+				return zigzag64(high, low)
 			end)
-		elseif kind == "SharedString" then
+		elseif kind == "SharedString" or kind == "NetAssetRef" then
 			return interleave(values, 4, function(v) return be32(shared(v or "")) end)
 		elseif kind == "OptionalCoordinateFrame" then
 			local present, cframes = table.create(#values), table.create(#values)
 			for i, v in values do present[i], cframes[i] = v ~= nil and v ~= false, v end
 			return u8(TYPE.CFrame) .. encodeCFrames(cframes) .. u8(TYPE.bool) .. encodeValues("bool", present, refOf, shared)
+		elseif kind == "UniqueId" then
+			return interleave(values, 16, function(v)
+				if not v or v == false then return string.rep("\0", 16) end
+				local randomHigh, randomLow = signedNumberWords(property(v, "Random", 0))
+				return be32(property(v, "Index", 0)) .. be32(property(v, "Time", 0)) .. zigzag64(randomHigh, randomLow)
+			end)
 		elseif kind == "Font" then
 			local out = table.create(#values)
 			for i, v in values do
@@ -1407,6 +1486,9 @@ local function NewBinaryPlaceWriter(modelMode)
 		local record = self.ByObject[object]
 		local kind = typeName(valueType, category)
 		if not record or not TYPE[kind] then return false end
+		-- UniqueIds identify the universe an instance came from.  Roblox omits them
+		-- in model files, and doing the same avoids invalid RBXM output.
+		if self.ModelMode and kind == "UniqueId" then return true end
 		record.Properties[name] = { Kind = kind, Value = value }
 		return true
 	end
@@ -1422,7 +1504,7 @@ local function NewBinaryPlaceWriter(modelMode)
 		local function chunk(signature, payload)
 			chunks[#chunks + 1] = signature .. le32(0) .. le32(#payload) .. "\0\0\0\0" .. payload
 		end
-		chunk("META", le32(1) .. stringValue("ExplicitAutoJoints") .. stringValue("true"))
+		chunk("META", le32(2) .. stringValue("ExplicitAutoJoints") .. stringValue("true") .. stringValue("USSI_BinaryWriter") .. stringValue(WRITER_VERSION))
 		for id, name in classNames do
 			local group = groups[name]; table.sort(group, function(a, b) return a.Ref < b.Ref end); classIds[name] = id - 1
 			local refs, services = table.create(#group), table.create(#group); local hasService = false
@@ -1456,7 +1538,8 @@ local function NewBinaryPlaceWriter(modelMode)
 				-- iterator skip the element and corrupts the interleaved binary arrays.
 				local values = table.create(#group); for i, record in group do local property = record.Properties[propertyName]; values[i] = property and property.Value or false end
 				local encoded = encodeValues(kind, values, refOf, shared)
-				if encoded then chunk("PROP", le32(classIds[name]) .. stringValue(propertyName) .. u8(TYPE[kind]) .. encoded) end
+				assert(encoded, "RBXL writer has no encoder for " .. tostring(kind))
+				chunk("PROP", le32(classIds[name]) .. stringValue(propertyName) .. u8(TYPE[kind]) .. encoded)
 			end
 		end
 		-- Shared strings are discovered while encoding property chunks, so move SSTR
@@ -1471,7 +1554,23 @@ local function NewBinaryPlaceWriter(modelMode)
 		for i, record in ordered do children[i], parents[i] = record.Ref, record.Parent and refOf[record.Parent] or -1 end
 		chunk("PRNT", u8(0) .. le32(#ordered) .. references(children) .. references(parents))
 		chunk("END\0", "</roblox>")
-		return "<roblox!\137\255\r\n\26\n" .. le16(0) .. le32(#classNames) .. le32(#self.Instances) .. string.rep("\0", 8) .. table.concat(chunks)
+		local output = "<roblox!\137\255\r\n\26\n" .. le16(0) .. le32(#classNames) .. le32(#self.Instances) .. string.rep("\0", 8) .. table.concat(chunks)
+		-- Refuse to write a truncated or compressed/mislabeled chunk. This is a
+		-- cheap structural check that runs before writefile, where an invalid place
+		-- is much harder to diagnose from Studio's generic load error.
+		assert(#output >= 32 and string.sub(output, 1, 14) == "<roblox!\137\255\r\n\26\n", "RBXL writer produced an invalid header")
+		local source, offset, ended = buffer.fromstring(output), 32, false
+		while offset < #output do
+			assert(offset + 16 <= #output, "RBXL writer produced a truncated chunk header")
+			local signature = buffer.readstring(source, offset, 4)
+			local compressedLength, length = buffer.readu32(source, offset + 4), buffer.readu32(source, offset + 8)
+			assert(compressedLength == 0, "RBXL writer mislabeled an uncompressed chunk")
+			offset =offset+ (16 + length
+)			assert(offset <= #output, "RBXL writer produced a truncated chunk payload")
+			if signature == "END\0" then ended = true; break end
+		end
+		assert(ended and offset == #output, "RBXL writer is missing a final END chunk")
+		return output
 	end
 	return state
 end
@@ -4086,7 +4185,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 
 	local function save_hierarchy(hierarchy)
 		for _, instance in hierarchy do
-local __DARKLUA_CONTINUE_99=false repeat			local InstanceOverride, ClassTagOverride, ClassNameOverride
+			local InstanceOverride, ClassTagOverride, ClassNameOverride
 
 			if not InstanceOverride then
 				InstanceOverride = InstancesOverrides[instance]
@@ -4098,7 +4197,7 @@ local __DARKLUA_CONTINUE_99=false repeat			local InstanceOverride, ClassTagOverr
 
 			if ClassName == "Terrain" and not cacheTerrainSmoothGrid(instance) then
 				warn("Skipping Terrain: its SmoothGrid data could not be read; saving it would create a corrupt place file.")
-__DARKLUA_CONTINUE_99=true				break
+				continue
 			end
 
 			local InstanceName = instance.Name
@@ -4106,18 +4205,18 @@ __DARKLUA_CONTINUE_99=true				break
 
 			if not ClassTagOverride then -- ! Assuming anything that has __ClassName comes from save_extra
 				if IgnoreNotArchivable and not instance.Archivable then
-__DARKLUA_CONTINUE_99=true					break
+					continue
 				end
 
 				SkipEntirely = IgnoreList[instance]
 				if SkipEntirely then
-__DARKLUA_CONTINUE_99=true					break
+					continue
 				end
 
 				do
 					local OnIgnoredList = IgnoreList[ClassName]
 					if OnIgnoredList and (OnIgnoredList == true or OnIgnoredList[InstanceName]) then
-__DARKLUA_CONTINUE_99=true						break
+						continue
 					end
 				end
 
@@ -4145,7 +4244,7 @@ __DARKLUA_CONTINUE_99=true						break
 						if SaveNotCreatable then
 							ClassName, InstanceOverride = Fix, replaceClassName(instance, InstanceName, ClassName)
 						else
-__DARKLUA_CONTINUE_99=true							break -- They won't show up in Studio anyway (Enable SaveNotCreatable if you wish to bypass this)
+							continue -- They won't show up in Studio anyway (Enable SaveNotCreatable if you wish to bypass this)
 						end
 					else -- ! Assuming nothing that is a PartOperation or inherits from it is in NotCreatableFixes
 						if TreatUnionsAsParts and instance:IsA("PartOperation") then
@@ -4220,20 +4319,20 @@ __DARKLUA_CONTINUE_99=true							break -- They won't show up in Studio anyway (E
 					end
 
 					for _, Property in GetInheritedProps(ClassNameOverride or ClassName) do
-local __DARKLUA_CONTINUE_101=false repeat						local PropertyName = Property.Name
+						local PropertyName = Property.Name
 
 						if ClassName == "Terrain" and not TerrainProperties[PropertyName] then
-__DARKLUA_CONTINUE_101=true							break
+							continue
 						end
 
 						if IgnoreProperties[PropertyName] then
-__DARKLUA_CONTINUE_101=true							break
+							continue
 						end
 
 						local ValueType = Property.ValueType
 
 						if IgnoreSharedStrings and ValueType == "SharedString" then -- ? More info in Options
-__DARKLUA_CONTINUE_101=true							break
+							continue
 						end
 
 						local Special, Category, Optional = Property.Special, Property.Category, Property.Optional
@@ -4250,7 +4349,7 @@ __DARKLUA_CONTINUE_101=true							break
 							if raw == __BREAK then -- ! Assuming __BREAK is always returned when there's a failure to read a property
 								local GHPFFailed, Fallback = Property.GHPFFailed, Property.Fallback
 								if GHPFFailed and not Fallback then
-__DARKLUA_CONTINUE_101=true									break
+									continue
 								end
 
 								if not GHPFFailed then
@@ -4277,12 +4376,12 @@ __DARKLUA_CONTINUE_101=true									break
 										if __DEBUG_MODE then
 											__DEBUG_MODE("Fix Failed", PropertyName, result)
 										end
-__DARKLUA_CONTINUE_101=true										break
+										continue
 									end
 								end
 
 								if raw == __BREAK then
-__DARKLUA_CONTINUE_101=true									break
+									continue
 								end
 							end
 
@@ -4297,7 +4396,7 @@ __DARKLUA_CONTINUE_101=true									break
 									default_instance[PropertyName] = index(new_def_inst, PropertyName)
 								end
 								if default_instance[PropertyName] == raw then
-__DARKLUA_CONTINUE_101=true									break
+									continue
 								end
 							end
 						end
@@ -4322,7 +4421,7 @@ __DARKLUA_CONTINUE_101=true									break
 							if not BinaryState:AddProperty(instance, PropertyName, ValueType, raw, Category) then
 								warn("UNSUPPORTED BINARY TYPE (OPEN A GITHUB ISSUE): ", ValueType, ClassName, PropertyName)
 							end
-__DARKLUA_CONTINUE_101=true							break
+							continue
 						end
 
 						local tag, value
@@ -4338,7 +4437,7 @@ __DARKLUA_CONTINUE_101=true							break
 											or ValueType ~= "Instance" and ValueType ~= Fix
 										)
 									then -- * To avoid errors
-__DARKLUA_CONTINUE_101=true										break
+										continue
 									end
 								end
 
@@ -4451,7 +4550,7 @@ __DARKLUA_CONTINUE_101=true										break
 								end
 								if BinaryState then
 									BinaryState:AddProperty(instance, PropertyName, ValueType, value)
-__DARKLUA_CONTINUE_101=true									break
+									continue
 								end
 								value = XML_Descriptors.__PROTECTEDSTRING(value)
 							else
@@ -4462,9 +4561,9 @@ __DARKLUA_CONTINUE_101=true									break
 
 									if Descriptor then
 										if raw == nil then
-__DARKLUA_CONTINUE_101=true											-- * It can be empty, because it's optional
+											-- * It can be empty, because it's optional
 											-- ? Though why even save it if it's empty considering it's optional
-											break
+											continue
 										-- value, tag = "", ValueType
 										else
 											value, tag = ReturnValueAndTag(raw, ValueType, Descriptor)
@@ -4480,7 +4579,7 @@ __DARKLUA_CONTINUE_101=true											-- * It can be empty, because it's optiona
 						else --if __DEBUG_MODE then -- * We print this anyway because very important
 							warn("UNSUPPORTED TYPE (OPEN A GITHUB ISSUE): ", ValueType, ClassName, PropertyName)
 						end
-__DARKLUA_CONTINUE_101=true until true if not __DARKLUA_CONTINUE_101 then break end					end
+					end
 				end
 				if not BinaryState then
 					savebuffer[savebuffer_size] = "</Properties>"
@@ -4508,7 +4607,7 @@ __DARKLUA_CONTINUE_101=true until true if not __DARKLUA_CONTINUE_101 then break 
 				savebuffer[savebuffer_size] = "</Item>"
 				savebuffer_size =savebuffer_size+ 1
 			end
-__DARKLUA_CONTINUE_99=true until true if not __DARKLUA_CONTINUE_99 then break end		end
+		end
 	end
 
 	local function save_extra(name, instanceOrTable, saveProps, customClassName, source)

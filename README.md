@@ -62,6 +62,9 @@ The maintainers do not support or condone misuse of this software and are not re
 - [x] Native binary format output (`.rbxl` / `.rbxm`)
   - Binary output is enabled by default. Set `Binary = false` only when an XML workflow is required.
   - The writer produces standard uncompressed RBXL v0 chunks. Studio accepts uncompressed chunks and can recompress them on its next save.
+  - The file metadata includes `USSI_BinaryWriter=2`, which makes it possible to tell an older cached script from the current serializer.
+  - Writer v2 handles modern `Content` (URI and instance-reference sources), legacy `ContentId`, `SecurityCapabilities`, shared strings, and color sequences using their current binary type tags. `Instance.HistoryId` remains intentionally skipped to avoid save-to-save diff noise.
+  - `Content` values with opaque external sources and Terrain voxel data cannot be read through every executor API. They are omitted rather than written with invalid binary data.
 - [ ] Add table.clone instead {} in some cases if possible
 - [ ] Support for Model files:
   - [x] rbxmx (xml)
@@ -94,7 +97,7 @@ The maintainers do not support or condone misuse of this software and are not re
   * [x] IsolatePlayerGui (same as IsolateLocalPlayer)
   * [x] Callback
   * [x] ~~CopyToClipboard/Clipboard~~ Use Callback instead
-  * [ ] Binary (rbxl/rbxm)
+  * [x] Binary (rbxl/rbxm)
 - [x] ~~Remove buffersize, savebuffer & so on for sake of performance by concatenating <Item> strings to total string then writing it to file (no extra steps like table.concat)~~ table.concat proved faster in the case of huge amount of concatenations
   - Test table.concat vs string ..= with a full buffer (this benchmark differs per usecase)
 - [ ] Add Option to restart saveinstance from the point that it crashed on (perhaps by skipping)
