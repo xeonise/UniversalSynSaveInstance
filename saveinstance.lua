@@ -1110,6 +1110,10 @@ do
 			MeshPart = { "CollisionFidelity" },
 			PartOperation = { "CollisionFidelity" },
 			TriangleMeshPart = { "CollisionFidelity" },
+			-- Terrain voxel data is marked CanLoad-only even though Studio needs it
+			-- when deserializing an XML place. It is read below through
+			-- gethiddenproperty and must be retained to avoid an empty/corrupt map.
+			Terrain = { "SmoothGrid" },
 		},
 		Blacklist = {
 			LuaSourceContainer = { "ScriptGuid" },
@@ -3638,6 +3642,50 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 	end
 
 	local gethiddenproperty_fallback
+	local TerrainProperties = ArrayToDict({
+		"AcquisitionMethod",
+		"AttributesSerialize",
+		"Capabilities",
+		"Decoration",
+		"DefinesCapabilities",
+		"GrassLength",
+		"MaterialColors",
+		"Name",
+		"SmoothGrid",
+		"SmoothVoxelsUpgraded",
+		"SourceAssetId",
+		"Tags",
+		"WaterColor",
+		"WaterReflectance",
+		"WaterTransparency",
+		"WaterWaveSize",
+		"WaterWaveSpeed",
+	})
+
+	local function cacheTerrainSmoothGrid(instance)
+		-- Terrain has no public API for its voxel payload. Saving the Terrain
+		-- instance without SmoothGrid causes Studio to treat it as corrupt and
+		-- remove it during load, so omit it unless the complete payload is readable.
+		if not gethiddenproperty then
+			return false
+		end
+
+		local ok, smoothGrid = pcall(gethiddenproperty, instance, "SmoothGrid")
+		if not ok or type(smoothGrid) ~= "string" or #smoothGrid == 0 then
+			return false
+		end
+
+		local override = InstancesOverrides[instance]
+		if not override then
+			override = { Properties = {} }
+			InstancesOverrides[instance] = override
+		elseif not override.Properties then
+			override.Properties = {}
+		end
+
+		override.Properties.SmoothGrid = smoothGrid
+		return true
+	end
 
 	local function save_hierarchy(hierarchy)
 		for _, instance in next, hierarchy do
@@ -3652,6 +3700,12 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 					end
 				end
 				local ClassName = instance.ClassName
+
+				if ClassName == "Terrain" and not cacheTerrainSmoothGrid(instance) then
+					warn("Skipping Terrain: its SmoothGrid data could not be read; saving it would create a corrupt place file.")
+					__DARKLUA_CONTINUE_68 = true
+					break
+				end
 
 				local InstanceName = instance.Name
 				local SkipEntirely
@@ -3762,6 +3816,11 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 							local __DARKLUA_CONTINUE_69 = false
 							repeat
 								local PropertyName = Property.Name
+
+								if ClassName == "Terrain" and not TerrainProperties[PropertyName] then
+									__DARKLUA_CONTINUE_69 = true
+									break
+								end
 
 								if IgnoreProperties[PropertyName] then
 									__DARKLUA_CONTINUE_69 = true
