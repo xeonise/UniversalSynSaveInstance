@@ -2429,6 +2429,8 @@ local GLOBAL_ENV = getgenv and getgenv() or _G or shared
 --- @field Callback function -- If set, the serialized data will be sent to the callback function instead of to file. ___Default:___ false
 --- @field mode string -- Valid modes: full, optimized, scripts. Change this to invalid mode like "invalid" if you only want ExtraInstances. "optimized" mode is **NOT** supported with *@Object* option. ___Default:___ `"optimized"`
 --- @field Decompile boolean -- Script decompiling. ___Default:___ true
+--- @field PythiaDecompiler boolean -- Uses the local Pythia decompiler service instead of the executor's built-in `decompile`. Requires `getscriptbytecode`, Base64 encoding, and WebSocket support. ___Default:___ true
+--- @field PythiaEndpoint string -- WebSocket address for the Pythia decompiler service. ___Default:___ `"ws://127.0.0.1:9002"`
 --- @field scriptcache boolean -- Use decompiled script cache to avoid decompiling duplicate scripts. ___Default:___ true
 --- @field DecompileTimeout number -- If the decompilation run time exceeds this value it gets cancelled. Set to -1 to disable timeout (unreliable). ___Default:___ 10
 --- @field DecompileJobless boolean -- Includes already decompiled code in the output. No new scripts are decompiled. ___Default:___ false
@@ -2531,6 +2533,8 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 	local OPTIONS = {
 		mode = "optimized",
 		Decompile = EXECUTOR_NAME ~= "Velocity", -- TODO Temp fix for crashes
+		PythiaDecompiler = true,
+		PythiaEndpoint = "ws://127.0.0.1:9002",
 		scriptcache = true,
 		-- decomptype = "",
 		DecompileTimeout = 10,
@@ -3218,10 +3222,138 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 		end
 	end
 
+	-- Based on the local decompiler adapter in ../../script.lua. A connection is
+	-- opened for each request so a timed-out response cannot be consumed by the
+	-- next script being saved.
+	local function pythia_decompile(script)
+		if type(getscriptbytecode) ~= "function" then
+			error("Pythia requires getscriptbytecode", 0)
+		end
+		if type(base64encode) ~= "function" then
+			error("Pythia requires a Base64 encoder", 0)
+		end
+
+		local websocket = (getgenv and getgenv().WebSocket) or WebSocket
+		local connect = websocket and websocket.connect
+		if type(connect) ~= "function" then
+			error("Pythia requires WebSocket.connect", 0)
+		end
+
+		local endpoint = OPTIONS.PythiaEndpoint
+		if type(endpoint) ~= "string" or endpoint == "" then
+			error("PythiaEndpoint must be a non-empty WebSocket URL", 0)
+		end
+
+		local ok, bytecode = pcall(getscriptbytecode, script)
+		if not ok or type(bytecode) ~= "string" or bytecode == "" then
+			error("Failed to get script bytecode", 0)
+		end
+
+		local connected, socketOrError = pcall(connect, endpoint)
+		if not connected or not socketOrError then
+			error("Failed to connect to Pythia: " .. tostring(socketOrError), 0)
+		end
+
+		local socket = socketOrError
+		local response
+		local messageConnection
+		local function cleanup()
+			if messageConnection then
+				pcall(messageConnection.Disconnect, messageConnection)
+			end
+			if type(socket.Close) == "function" then
+				pcall(socket.Close, socket)
+			end
+		end
+
+		local subscribed, subscribeError = pcall(function()
+			messageConnection = socket.OnMessage:Connect(function(message)
+				response = message
+			end)
+		end)
+		if not subscribed then
+			cleanup()
+			error("Failed to listen for Pythia responses: " .. tostring(subscribeError), 0)
+		end
+
+		local encoded = base64encode(bytecode)
+		local sent, sendError = pcall(socket.Send, socket, encoded)
+		if not sent then
+			cleanup()
+			error("Failed to send Pythia request: " .. tostring(sendError), 0)
+		end
+
+		local timeout = OPTIONS.DecompileTimeout
+		local deadline = timeout >= 0 and os.clock() + timeout or nil
+		while response == nil do
+			if deadline and os.clock() >= deadline then
+				cleanup()
+				error("Pythia decompiler timed out", 0)
+			end
+			task.wait()
+		end
+
+		cleanup()
+		if type(response) ~= "string" or response == "" then
+			error("Pythia returned an empty response", 0)
+		end
+		return "-- Pythia Decompiler\n" .. response
+	end
+
 	do
 		if not OPTIONS.Decompile then
 			ldecompile = function()
 				return "-- Decompiling is disabled"
+			end
+		elseif OPTIONS.PythiaDecompiler then
+			ldecompile = function(script)
+				local bytecode
+				if ScriptCache then
+					local s
+					s, bytecode = getbytecode(script)
+					local cached
+
+					if s then
+						if not bytecode or bytecode == "" then
+							return "-- The Script is Empty"
+						end
+						cached = ldeccache[bytecode]
+					else
+						bytecode = nil
+					end
+
+					if cached then
+						if __DEBUG_MODE then
+							__DEBUG_MODE("Found in Cache", script:GetFullName())
+						end
+						return cached
+					end
+				elseif DecompileJobless then
+					return "-- Not found in already decompiled ScriptCache"
+				end
+
+				local ok, result = run_with_loading("Decompiling " .. script.Name, true, nil, function()
+					return pcall(pythia_decompile, script)
+				end)
+				if not result then
+					ok, result = false, "Empty Output"
+				end
+
+				local output
+				if ok then
+					output = string.gsub(result, "\0", "\\0")
+				else
+					output = "--[[ Failed to decompile. Reason:\n" .. (result or "") .. "\n]]"
+				end
+
+				if ScriptCache and bytecode then
+					ldeccache[bytecode] = output
+					if __DEBUG_MODE then
+						__DEBUG_MODE("Cached", script:GetFullName())
+					end
+				end
+
+				return output
 			end
 		elseif decompile then
 			local decomp = construct_TimeoutHandler(DecompileTimeout, decompile, "Decompiler timed out")
