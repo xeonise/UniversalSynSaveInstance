@@ -1230,6 +1230,7 @@ local function NewBinaryPlaceWriter(modelMode)
 		SharedString = 0x1C,
 		OptionalCoordinateFrame = 0x1E,
 		Font = 0x20,
+		SecurityCapabilities = 0x21,
 	}
 
 	local function typeName(valueType, category)
@@ -1237,8 +1238,6 @@ local function NewBinaryPlaceWriter(modelMode)
 			return "Reference"
 		elseif category == "Enum" then
 			return "Token"
-		elseif valueType == "SecurityCapabilities" then
-			return "int64"
 		end
 		return valueType
 	end
@@ -1373,9 +1372,9 @@ local function NewBinaryPlaceWriter(modelMode)
 				if type(v) == "number" then return u8(bit32.rshift(v, 16)) .. u8(bit32.rshift(v, 8)) .. u8(v) end
 				return u8(math.floor((v and v.R or 0) * 255)) .. u8(math.floor((v and v.G or 0) * 255)) .. u8(math.floor((v and v.B or 0) * 255))
 			end)
-		elseif kind == "int64" then
+		elseif kind == "int64" or kind == "SecurityCapabilities" then
 			return interleave(values, 8, function(v)
-				v = v or 0; if typeof(v) == "SecurityCapabilities" then v = __COUNT_CAPABILITY_BITS(v) end
+				v = v or 0; if kind == "SecurityCapabilities" and typeof(v) == "SecurityCapabilities" then v = __COUNT_CAPABILITY_BITS(v) end
 				local n = v >= 0 and v * 2 or -v * 2 - 1; return be32(math.floor(n / U32)) .. be32(n % U32)
 			end)
 		elseif kind == "SharedString" then
