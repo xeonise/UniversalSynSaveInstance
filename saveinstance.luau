@@ -1101,6 +1101,366 @@ do
 	XML_Descriptors[descriptorName] = XML_Descriptors[redirectName]
 end
 
+-- RBXL version 0 writer. Chunks intentionally remain uncompressed: compression is
+-- optional in the format and avoiding it keeps the writer self-contained across
+-- executors. Roblox Studio transparently loads these files and can recompress
+-- them on its next save.
+local function NewBinaryPlaceWriter(modelMode)
+	local U32 = 0x100000000
+	local function u8(n)
+		return string.char(n % 0x100)
+	end
+	local function le32(n)
+		local b = buffer.create(4)
+		buffer.writeu32(b, 0, n)
+		return buffer.tostring(b)
+	end
+	local function be32(n)
+		return string.char(
+			bit32.band(bit32.rshift(n, 24), 0xFF),
+			bit32.band(bit32.rshift(n, 16), 0xFF),
+			bit32.band(bit32.rshift(n, 8), 0xFF),
+			bit32.band(n, 0xFF)
+		)
+	end
+	local function le16(n)
+		local b = buffer.create(2)
+		buffer.writeu16(b, 0, n)
+		return buffer.tostring(b)
+	end
+	local function f32le(n)
+		local b = buffer.create(4)
+		buffer.writef32(b, 0, n or 0)
+		return buffer.tostring(b)
+	end
+	local function f64le(n)
+		local b = buffer.create(8)
+		buffer.writef64(b, 0, n or 0)
+		return buffer.tostring(b)
+	end
+	local function rfloat(n)
+		local b = buffer.create(4)
+		buffer.writef32(b, 0, n or 0)
+		local bits = buffer.readu32(b, 0)
+		return be32(bit32.bor(bit32.lshift(bits, 1), bit32.rshift(bits, 31)))
+	end
+	local function zint(n, bigEndian)
+		n = math.floor(n or 0)
+		local encoded = bit32.bxor(bit32.lshift(n, 1), bit32.arshift(n, 31))
+		return bigEndian and be32(encoded) or le32(encoded)
+	end
+	local function rawString(value)
+		if type(value) == "string" then
+			return value
+		end
+		if value == nil then
+			return ""
+		end
+		local ok, uri = pcall(index, value, "Uri")
+		return ok and uri or ""
+	end
+	local function stringValue(value)
+		value = rawString(value)
+		return le32(#value) .. value
+	end
+	local function interleave(values, width, encode)
+		local count = #values
+		local records = table.create(count)
+		for i, value in values do
+			records[i] = encode(value)
+		end
+		local out = table.create(width)
+		local size = 0
+		for byte = 1, width do
+			local column = table.create(count)
+			for i = 1, count do
+				column[i] = string.sub(records[i], byte, byte)
+			end
+			out[byte] = table.concat(column)
+			size += #out[byte]
+		end
+		return table.concat(out), size
+	end
+	local function references(values)
+		local previous = 0
+		return interleave(values, 4, function(value)
+			value = value or -1
+			local delta = value - previous
+			previous = value
+			return zint(delta, true)
+		end)
+	end
+	local TYPE = {
+		string = 0x01,
+		BinaryString = 0x01,
+		ProtectedString = 0x01,
+		Content = 0x01,
+		bool = 0x02,
+		boolean = 0x02,
+		int = 0x03,
+		int32 = 0x03,
+		float = 0x04,
+		double = 0x05,
+		UDim = 0x06,
+		UDim2 = 0x07,
+		Ray = 0x08,
+		Faces = 0x09,
+		Axes = 0x0A,
+		BrickColor = 0x0B,
+		Color3 = 0x0C,
+		Vector2 = 0x0D,
+		Vector3 = 0x0E,
+		Vector2int16 = 0x0F,
+		CFrame = 0x10,
+		CoordinateFrame = 0x10,
+		Token = 0x12,
+		Reference = 0x13,
+		Vector3int16 = 0x14,
+		NumberSequence = 0x15,
+		ColorSequence = 0x16,
+		NumberRange = 0x17,
+		Rect = 0x18,
+		Rect2D = 0x18,
+		PhysicalProperties = 0x19,
+		Color3uint8 = 0x1A,
+		int64 = 0x1B,
+		SharedString = 0x1C,
+		OptionalCoordinateFrame = 0x1E,
+		Font = 0x20,
+	}
+
+	local function typeName(valueType, category)
+		if category == "Class" then
+			return "Reference"
+		elseif category == "Enum" then
+			return "Token"
+		elseif valueType == "SecurityCapabilities" then
+			return "int64"
+		end
+		return valueType
+	end
+
+	local function encodeCFrames(values)
+		local rotations, matrices, positions = table.create(#values), {}, table.create(#values)
+		for i, value in values do
+			value = value or CFrame.new()
+			local x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 = value:GetComponents()
+			buffer.writef32(rotationBuffer, 0, r00)
+			buffer.writef32(rotationBuffer, 4, r01)
+			buffer.writef32(rotationBuffer, 8, r02)
+			buffer.writef32(rotationBuffer, 12, r10)
+			buffer.writef32(rotationBuffer, 16, r11)
+			buffer.writef32(rotationBuffer, 20, r12)
+			buffer.writef32(rotationBuffer, 24, r20)
+			buffer.writef32(rotationBuffer, 28, r21)
+			buffer.writef32(rotationBuffer, 32, r22)
+			local id = CFrame_Rotation_IDs[buffer.tostring(rotationBuffer)] or 0
+			rotations[i] = u8(id)
+			if id == 0 then
+				matrices[#matrices + 1] = f32le(r00) .. f32le(r01) .. f32le(r02) .. f32le(r10) .. f32le(r11) .. f32le(r12) .. f32le(r20) .. f32le(r21) .. f32le(r22)
+			end
+			positions[i] = { x = x, y = y, z = z }
+		end
+		return table.concat(rotations) .. table.concat(matrices) .. interleave(positions, 12, function(v)
+			return rfloat(v.x) .. rfloat(v.y) .. rfloat(v.z)
+		end)
+	end
+
+	local function encodeValues(kind, values, refOf, shared)
+		if kind == "string" or kind == "BinaryString" or kind == "ProtectedString" or kind == "Content" then
+			local out = table.create(#values)
+			for i, value in values do out[i] = stringValue(value) end
+			return table.concat(out)
+		elseif kind == "bool" or kind == "boolean" then
+			local out = table.create(#values)
+			for i, value in values do out[i] = u8(value and 1 or 0) end
+			return table.concat(out)
+		elseif kind == "int" or kind == "int32" then
+			return interleave(values, 4, function(v) return zint(v, true) end)
+		elseif kind == "float" then
+			return interleave(values, 4, rfloat)
+		elseif kind == "double" then
+			local out = table.create(#values)
+			for i, value in values do out[i] = f64le(value) end
+			return table.concat(out)
+		elseif kind == "UDim" then
+			return interleave(values, 8, function(v)
+				return rfloat(v and v.Scale) .. zint(v and v.Offset, false)
+			end)
+		elseif kind == "UDim2" then
+			return interleave(values, 16, function(v)
+				return rfloat(v and v.X.Scale) .. rfloat(v and v.Y.Scale) .. zint(v and v.X.Offset, false) .. zint(v and v.Y.Offset, false)
+			end)
+		elseif kind == "Ray" then
+			local out = table.create(#values)
+			for i, v in values do
+				local o, d = v and v.Origin or Vector3.zero, v and v.Direction or Vector3.zero
+				out[i] = f32le(o.X) .. f32le(o.Y) .. f32le(o.Z) .. f32le(d.X) .. f32le(d.Y) .. f32le(d.Z)
+			end
+			return table.concat(out)
+		elseif kind == "Faces" or kind == "Axes" then
+			local out = table.create(#values)
+			for i, v in values do
+				out[i] = u8(v and (kind == "Faces" and __COUNT_BITS(v.Right, v.Top, v.Back, v.Left, v.Bottom, v.Front) or __COUNT_BITS(v.X, v.Y, v.Z)) or 0)
+			end
+			return table.concat(out)
+		elseif kind == "BrickColor" then
+			return interleave(values, 4, function(v) return be32(v and v.Number or 0) end)
+		elseif kind == "Color3" then
+			return interleave(values, 12, function(v) return rfloat(v and v.R) .. rfloat(v and v.G) .. rfloat(v and v.B) end)
+		elseif kind == "Vector2" then
+			return interleave(values, 8, function(v) return rfloat(v and v.X) .. rfloat(v and v.Y) end)
+		elseif kind == "Vector3" then
+			return interleave(values, 12, function(v) return rfloat(v and v.X) .. rfloat(v and v.Y) .. rfloat(v and v.Z) end)
+		elseif kind == "Vector2int16" or kind == "Vector3int16" then
+			local fields, width = kind == "Vector2int16" and 2 or 3, kind == "Vector2int16" and 4 or 6
+			local out = table.create(#values)
+			for i, v in values do
+				local b = buffer.create(width)
+				buffer.writei16(b, 0, v and v.X or 0); buffer.writei16(b, 2, v and v.Y or 0)
+				if fields == 3 then buffer.writei16(b, 4, v and v.Z or 0) end
+				out[i] = buffer.tostring(b)
+			end
+			return table.concat(out)
+		elseif kind == "CFrame" or kind == "CoordinateFrame" then
+			return encodeCFrames(values)
+		elseif kind == "Token" then
+			return interleave(values, 4, function(v) return be32(v and v.Value or 0) end)
+		elseif kind == "Reference" then
+			local ids = table.create(#values)
+			for i, v in values do ids[i] = v and refOf[v] or -1 end
+			return references(ids)
+		elseif kind == "NumberSequence" or kind == "ColorSequence" then
+			local out = table.create(#values)
+			for i, sequence in values do
+				local keypoints = sequence and sequence.Keypoints or {}
+				local result = { le32(#keypoints) }
+				for _, key in keypoints do
+					if kind == "NumberSequence" then table.insert(result, f32le(key.Time) .. f32le(key.Value) .. f32le(key.Envelope))
+					else local c = key.Value; table.insert(result, f32le(key.Time) .. f32le(c.R) .. f32le(c.G) .. f32le(c.B) .. f32le(key.Envelope)) end
+				end
+				out[i] = table.concat(result)
+			end
+			return table.concat(out)
+		elseif kind == "NumberRange" then
+			local out = table.create(#values)
+			for i, v in values do out[i] = f32le(v and v.Min) .. f32le(v and v.Max) end
+			return table.concat(out)
+		elseif kind == "Rect" or kind == "Rect2D" then
+			return interleave(values, 16, function(v)
+				local min, max = v and v.Min or Vector2.zero, v and v.Max or Vector2.zero
+				return rfloat(min.X) .. rfloat(min.Y) .. rfloat(max.X) .. rfloat(max.Y)
+			end)
+		elseif kind == "PhysicalProperties" then
+			local out = table.create(#values)
+			for i, v in values do
+				out[i] = v and (u8(3) .. f32le(v.Density) .. f32le(v.Friction) .. f32le(v.Elasticity) .. f32le(v.FrictionWeight) .. f32le(v.ElasticityWeight) .. f32le(v.AcousticAbsorption)) or u8(0)
+			end
+			return table.concat(out)
+		elseif kind == "Color3uint8" then
+			return interleave(values, 3, function(v)
+				if type(v) == "number" then return u8(bit32.rshift(v, 16)) .. u8(bit32.rshift(v, 8)) .. u8(v) end
+				return u8(math.floor((v and v.R or 0) * 255)) .. u8(math.floor((v and v.G or 0) * 255)) .. u8(math.floor((v and v.B or 0) * 255))
+			end)
+		elseif kind == "int64" then
+			return interleave(values, 8, function(v)
+				v = v or 0; if typeof(v) == "SecurityCapabilities" then v = __COUNT_CAPABILITY_BITS(v) end
+				local n = v >= 0 and v * 2 or -v * 2 - 1; return be32(math.floor(n / U32)) .. be32(n % U32)
+			end)
+		elseif kind == "SharedString" then
+			return interleave(values, 4, function(v) return be32(shared(v or "")) end)
+		elseif kind == "OptionalCoordinateFrame" then
+			local present, cframes = table.create(#values), table.create(#values)
+			for i, v in values do present[i], cframes[i] = v ~= nil, v end
+			return u8(TYPE.CFrame) .. encodeCFrames(cframes) .. u8(TYPE.bool) .. encodeValues("bool", present, refOf, shared)
+		elseif kind == "Font" then
+			local out = table.create(#values)
+			for i, v in values do
+				local weight = v and select(2, pcall(index, v, "Weight")) or nil
+				local style = v and select(2, pcall(index, v, "Style")) or nil
+				out[i] = stringValue(v and v.Family) .. le16(weight and weight.Value or 0) .. u8(style and style.Value or 0) .. stringValue("")
+			end
+			return table.concat(out)
+		end
+		return nil
+	end
+
+	local state = { Instances = {}, ByObject = {}, Shared = {}, SharedList = {}, ModelMode = modelMode }
+	function state:AddInstance(object, className, parent, isService)
+		local record = self.ByObject[object]
+		if record then return record end
+		record = { Object = object, Ref = GetRef(object), ClassName = className, Parent = parent, IsService = not self.ModelMode and isService, Properties = {} }
+		self.ByObject[object], self.Instances[#self.Instances + 1] = record, record
+		return record
+	end
+	function state:AddProperty(object, name, valueType, value, category)
+		local record = self.ByObject[object]
+		local kind = typeName(valueType, category)
+		if not record or not TYPE[kind] then return false end
+		record.Properties[name] = { Kind = kind, Value = value }
+		return true
+	end
+	function state:Build()
+		local groups, classNames = {}, {}
+		for _, record in self.Instances do
+			local group = groups[record.ClassName]
+			if not group then group = {}; groups[record.ClassName], classNames[#classNames + 1] = group, record.ClassName end
+			group[#group + 1] = record
+		end
+		table.sort(classNames)
+		local chunks, classIds = {}, {}
+		local function chunk(signature, payload)
+			chunks[#chunks + 1] = signature .. le32(0) .. le32(#payload) .. "\0\0\0\0" .. payload
+		end
+		chunk("META", le32(1) .. stringValue("ExplicitAutoJoints") .. stringValue("true"))
+		for id, name in classNames do
+			local group = groups[name]; table.sort(group, function(a, b) return a.Ref < b.Ref end); classIds[name] = id - 1
+			local refs, services = table.create(#group), table.create(#group); local hasService = false
+			for i, record in group do refs[i], services[i] = record.Ref, record.IsService and true or false; hasService = hasService or services[i] end
+			local payload = le32(id - 1) .. stringValue(name) .. u8(hasService and 1 or 0) .. le32(#group) .. references(refs)
+			if hasService then payload ..= encodeValues("bool", services, {}, function() return 0 end) end
+			chunk("INST", payload)
+		end
+		if #self.SharedList > 0 then
+			local payload = le32(0) .. le32(#self.SharedList)
+			for _, value in self.SharedList do payload ..= string.rep("\0", 16) .. stringValue(value) end
+			chunk("SSTR", payload)
+		end
+		local refOf = {}; for object, record in self.ByObject do refOf[object] = record.Ref end
+		local function shared(value)
+			local index = self.Shared[value]
+			if index == nil then index = #self.SharedList; self.Shared[value], self.SharedList[#self.SharedList + 1] = index, value end
+			return index
+		end
+		for _, name in classNames do
+			local group, names = groups[name], {}
+			local seen = {}
+			for _, record in group do for propertyName in record.Properties do if not seen[propertyName] then seen[propertyName], names[#names + 1] = true, propertyName end end end
+			table.sort(names)
+			for _, propertyName in names do
+				local kind; for _, record in group do local property = record.Properties[propertyName]; if property then kind = property.Kind; break end end
+				local values = table.create(#group); for i, record in group do local property = record.Properties[propertyName]; values[i] = property and property.Value or nil end
+				local encoded = encodeValues(kind, values, refOf, shared)
+				if encoded then chunk("PROP", le32(classIds[name]) .. stringValue(propertyName) .. u8(TYPE[kind]) .. encoded) end
+			end
+		end
+		-- Shared strings are discovered while encoding property chunks, so move SSTR
+		-- before the already-built INST/PROP chunks when it is required.
+		if #self.SharedList > 0 then
+			local payload = le32(0) .. le32(#self.SharedList)
+			for _, value in self.SharedList do payload ..= string.rep("\0", 16) .. stringValue(value) end
+			table.insert(chunks, 2, "SSTR" .. le32(0) .. le32(#payload) .. "\0\0\0\0" .. payload)
+		end
+		local ordered = table.clone(self.Instances); table.sort(ordered, function(a, b) return a.Ref < b.Ref end)
+		local children, parents = table.create(#ordered), table.create(#ordered)
+		for i, record in ordered do children[i], parents[i] = record.Ref, record.Parent and refOf[record.Parent] or -1 end
+		chunk("PRNT", u8(0) .. le32(#ordered) .. references(children) .. references(parents))
+		chunk("END\0", "</roblox>")
+		return "<roblox!\137\255\r\n\26\n" .. le16(0) .. le32(#classNames) .. le32(#self.Instances) .. string.rep("\0", 8) .. table.concat(chunks)
+	end
+	return state
+end
+
 local ClassList, FetchAPI
 
 do
@@ -2430,6 +2790,7 @@ local GLOBAL_ENV = getgenv and getgenv() or _G or shared
 --- @field AntiIdle boolean -- Prevents the 20-minute-Idle Kick. ___Default:___ true
 --- .Anonymous {boolean|table{UserId = string, Name = string}} -- * **RISKY:** Cleans the file of any info related to your account like: Name, UserId. This is useful for some games that might store that info in GUIs or other Instances. Might potentially mess up parts of strings that contain characters that match your Name or parts of numbers that match your UserId. Can also be a table with UserId & Name keys. ___Default:___ false
 --- @field ShowStatus boolean -- ___Default:___ true
+--- @field Binary boolean -- Write native `.rbxl`/`.rbxm` output. Set false only to retain legacy XML output. ___Default:___ true
 --- @field Callback function -- If set, the serialized data will be sent to the callback function instead of to file. ___Default:___ false
 --- @field mode string -- Valid modes: full, optimized, scripts. Change this to invalid mode like "invalid" if you only want ExtraInstances. "optimized" mode is **NOT** supported with *@Object* option. ___Default:___ `"optimized"`
 --- @field Decompile boolean -- Script decompiling. ___Default:___ true
@@ -2545,7 +2906,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 		-- * New:
 		__DEBUG_MODE = false,
 
-		-- Binary = false, -- true in syn newer versions (false in our case because no binary support yet), Description: Saves everything in Binary Mode (rbxl/rbxm).
+		Binary = true, -- Writes native RBXL/RBXM instead of XML. Set false only for legacy XML workflows.
 		Callback = false,
 		--Clipboard/CopyToClipboard = false, -- Description: If set to true, the serialized data will be set to the clipboard, which can be later pasted into studio easily. Useful for saving models. (Binary Only)
 		-- MaxThreads = 3 -- Description: The number of decompilation threads that can run at once. More threads means it can decompile for scripts at a time.
@@ -2891,17 +3252,21 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 	local SaveCacheInterval = OPTIONS.SaveCacheInterval
 	local ToSaveInstance = OPTIONS.Object
 	local IsModel = OPTIONS.IsModel
+	local BinaryOutput = OPTIONS.Binary
 
 	if ToSaveInstance and CustomOptions.IsModel == nil then
 		IsModel = true
 	end
+	local BinaryState = BinaryOutput and NewBinaryPlaceWriter(IsModel)
 
-	local IgnoreDefaultProperties = OPTIONS.IgnoreDefaultProperties
+	-- PROP chunks require a value for every instance in a class group. Retaining
+	-- defaults is both valid and avoids manufacturing incomplete property arrays.
+	local IgnoreDefaultProperties = not BinaryOutput and OPTIONS.IgnoreDefaultProperties
 	local IgnoreNotArchivable = not OPTIONS.IgnoreNotArchivable
 	local IgnorePropertiesOfNotScriptsOnScriptsMode = OPTIONS.IgnorePropertiesOfNotScriptsOnScriptsMode
 
 	local old_gethiddenproperty
-	if OPTIONS and gethiddenproperty then
+	if OPTIONS.IgnoreSpecialProperties and gethiddenproperty then
 		old_gethiddenproperty = gethiddenproperty
 		gethiddenproperty = nil
 	end
@@ -2977,7 +3342,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 			end
 		end
 
-		local filetype = IsModel and ".rbxmx" or ".rbxlx"
+		local filetype = BinaryOutput and (IsModel and ".rbxm" or ".rbxl") or (IsModel and ".rbxmx" or ".rbxlx")
 
 		if FilePath then
 			placename = FilePath
@@ -3612,6 +3977,9 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 	end
 
 	local function save_cache()
+		if BinaryOutput then
+			return
+		end
 		local savestr = table.concat(savebuffer)
 
 		local savestr_len = #savestr
@@ -3782,13 +4150,31 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 			-- ? The reason we only save .Name (and few other props in save_specific) is because
 			-- ? we can be sure this is a custom container (ex. NilInstancesFixes)
 			-- ? However, in case of NotCreatableFixes, the Instance might have Tags, Attributes etc. that can potentially be saved (even though it's a Folder)
+			if BinaryState then
+				local OutputClassName = ClassTagOverride and ClassList[ClassTagOverride] and ClassTagOverride or ClassName
+				BinaryState:AddInstance(
+					instance,
+					OutputClassName,
+					instance.Parent,
+					ClassList[OutputClassName] and ClassList[OutputClassName].Service
+				)
+			end
+
 			if InstanceOverride and InstanceOverride.__SaveSpecific then
-				savebuffer[savebuffer_size] = save_specific(ClassName, InstanceOverride.Properties) -- ! Assuming anything that has __SaveSpecific will have .Properties
-				savebuffer_size += 1
+				if BinaryState then
+					for propertyName, value in InstanceOverride.Properties do
+						BinaryState:AddProperty(instance, propertyName, propertyName == "Source" and "ProtectedString" or "string", value)
+					end
+				else
+					savebuffer[savebuffer_size] = save_specific(ClassName, InstanceOverride.Properties) -- ! Assuming anything that has __SaveSpecific will have .Properties
+					savebuffer_size += 1
+				end
 			else
 				-- local Properties =
-				savebuffer[savebuffer_size] = ReturnItem(ClassTagOverride or ClassName, instance) -- TODO: Ideally this shouldn't return <Properties> as well as the line below to close it IF  IgnorePropertiesOfNotScriptsOnScriptsMode is ENABLED
-				savebuffer_size += 1
+				if not BinaryState then
+					savebuffer[savebuffer_size] = ReturnItem(ClassTagOverride or ClassName, instance) -- TODO: Ideally this shouldn't return <Properties> as well as the line below to close it IF  IgnorePropertiesOfNotScriptsOnScriptsMode is ENABLED
+					savebuffer_size += 1
+				end
 				if not (IgnorePropertiesOfNotScriptsOnScriptsMode and not isLuaSourceContainer(instance)) then
 					local default_instance, new_def_inst
 
@@ -3917,6 +4303,13 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 							end
 						end
 
+						if BinaryState and not (ValueType == "ProtectedString" and PropertyName == "Source") then
+							if not BinaryState:AddProperty(instance, PropertyName, ValueType, raw, Category) then
+								warn("UNSUPPORTED BINARY TYPE (OPEN A GITHUB ISSUE): ", ValueType, ClassName, PropertyName)
+							end
+							continue
+						end
+
 						local tag, value
 						if Category == "Class" then
 							tag = "Ref"
@@ -4041,6 +4434,10 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 											.. value
 									end
 								end
+								if BinaryState then
+									BinaryState:AddProperty(instance, PropertyName, ValueType, value)
+									continue
+								end
 								value = XML_Descriptors.__PROTECTEDSTRING(value)
 							else
 								--OptionalCoordinateFrame and so on, we make it dynamic
@@ -4070,8 +4467,10 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 						end
 					end
 				end
-				savebuffer[savebuffer_size] = "</Properties>"
-				savebuffer_size += 1
+				if not BinaryState then
+					savebuffer[savebuffer_size] = "</Properties>"
+					savebuffer_size += 1
+				end
 
 				if SaveCacheInterval < savebuffer_size then
 					save_cache()
@@ -4090,8 +4489,10 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 				DecompileIgnoring = nil
 			end
 
-			savebuffer[savebuffer_size] = "</Item>"
-			savebuffer_size += 1
+			if not BinaryState then
+				savebuffer[savebuffer_size] = "</Item>"
+				savebuffer_size += 1
+			end
 		end
 	end
 
@@ -4144,7 +4545,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 		]]
 				header ..= '<Meta name="ExplicitAutoJoints">true</Meta>'
 			end
-			if writefile and not OPTIONS.Callback then
+			if not BinaryOutput and writefile and not OPTIONS.Callback then
 				writefile(placename, header) -- TODO This is sort of useless if writefile will be used at the end (like if AlternativeWritefile and Callback are unused)
 			end
 		end
@@ -4290,6 +4691,18 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 					.. "\n]]"
 			)
 		end
+
+		if BinaryState then
+			local output = BinaryState:Build()
+			local Callback = OPTIONS.Callback
+			if Callback then
+				Callback(output, { output })
+			else
+				run_with_loading("Writing binary RBXL to File (Depends on Exec)", nil, true, writefile, placename, output)
+			end
+			return
+		end
+
 		do
 			local tmp = { "<SharedStrings>" }
 			for value, identifier in SharedStrings do

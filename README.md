@@ -59,20 +59,13 @@ The maintainers do not support or condone misuse of this software and are not re
 
 # TO-DOs
 
-- [ ] Look into adding support for Binary Format Output (rbxl/rbxm)
-  - Users can already convert to Binary Format by
-    1. Open the File
-    2. Click on top left "FILE" text and select "Save to File As"
-    3. Make Sure rbxl/rbxm format is selected (not XML!)
-    4. Click Save
-  - .RBXL files are similar to .RBXLX files but are saved in Binary format, which helps reduce the file size.
-  - ! Check out [Rojo Rbx Dom Binary] & [Roblox Format Specifications Binary] for more documentation about the Binary File Format!
-  - ! Also see [buffer], [bit32] libraries as well as [pack]/[unpack] from the [string] library for more information on how you can implement something like this!
-  - ! [Rbx-Binary-Format]
+- [x] Native binary format output (`.rbxl` / `.rbxm`)
+  - Binary output is enabled by default. Set `Binary = false` only when an XML workflow is required.
+  - The writer produces standard uncompressed RBXL v0 chunks. Studio accepts uncompressed chunks and can recompress them on its next save.
 - [ ] Add table.clone instead {} in some cases if possible
 - [ ] Support for Model files:
   - [x] rbxmx (xml)
-  - [ ] rbxm (binary)
+  - [x] rbxm (binary)
 - [x] Implement [Luau Syntax] (important for performance!):
   - [x] Compound Operators
   - [x] Avoid using `next`, `ipairs` & `pairs`
