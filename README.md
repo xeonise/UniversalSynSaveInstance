@@ -1,5 +1,8 @@
 # UniversalSynSaveInstance
 
+> [!IMPORTANT]
+> Independent, unofficial project. Not affiliated with, endorsed by, or officially connected to Roblox Corporation. "Luau" is a trademark of Roblox Corporation.
+
 Save the current Roblox data model as a place or model file.
 
 Binary output is enabled by default:
@@ -7,7 +10,7 @@ Binary output is enabled by default:
 - Places: `.rbxl`
 - Models: `.rbxm`
 
-Use `Binary = false` only when you specifically need XML output (`.rbxlx` or `.rbxmx`).
+Use `Binary = false` only when you specifically need XML output (`.rbxlx` or `.rbxmx`). Binary output supports Zstandard compression by default; set `CompressionMode = false` when an uncompressed file is needed.
 
 ## Run
 
@@ -53,7 +56,7 @@ saveinstance({
 
 ## Current binary support
 
-The RBXL writer uses uncompressed RBXL v0 chunks, which Roblox Studio can open and recompress. It supports current `Content`, legacy `ContentId`, `SecurityCapabilities`, shared strings, references, color sequences, and common Roblox value types.
+The RBXL writer supports Zstandard or LZ4 compression, modern `Content`, legacy `ContentId`, `SecurityCapabilities`, shared strings, references, color sequences, and common Roblox value types.
 
 ## Limitations
 
@@ -63,4 +66,4 @@ The RBXL writer uses uncompressed RBXL v0 chunks, which Roblox Studio can open a
 
 ## Credits and license
 
-This project builds on the work of Moon/LorekeeperZinnia, Anaminus, Dekkonot, Synapse X contributors, Rojo, and the Roblox Client Tracker. See [LICENSE](LICENSE) for terms.
+This fork builds on the work of [luau/UniversalSynSaveInstance](https://github.com/luau/UniversalSynSaveInstance), Moon/LorekeeperZinnia, Anaminus, Dekkonot, Synapse X contributors, Rojo, and the Roblox Client Tracker. See [LICENSE](LICENSE) for terms.

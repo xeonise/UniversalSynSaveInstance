@@ -1,4 +1,4 @@
-version-3da9d00a092c4d59
+version-9e2e9085d9794dd1
 
 AdGui.FallbackImageContent
 
@@ -9,6 +9,8 @@ AudioPlayer.AudioContent
 BackpackItem.TextureContent
 
 BaseWrap.CageMeshContent
+BaseWrap.HSRContent
+BaseWrap.TemporaryCageMeshContent
 
 Beam.TextureContent
 
@@ -22,10 +24,12 @@ Clothing.Outfit1Content
 Clothing.Outfit2Content
 
 Decal.ColorMapContent
+Decal.EmissiveMaskContent
 Decal.MetalnessMapContent
 Decal.NormalMapContent
 Decal.RoughnessMapContent
 Decal.TextureContent
+Decal.TexturePackContent
 
 DragDetector.ActivatedCursorIconContent
 
@@ -34,17 +38,24 @@ FileMesh.TextureContent
 
 ImageButton.HoverImageContent
 ImageButton.ImageContent
+ImageButton.LocalizedImageContent
 ImageButton.PressedImageContent
 
 ImageHandleAdornment.ImageContent
 
 ImageLabel.ImageContent
+ImageLabel.LocalizedImageContent
+
+InputActionLabel.ResolvedImageContent
+
+InputBinding.DisplayImage
 
 MaterialVariant.ColorMapContent
 MaterialVariant.EmissiveMaskContent
 MaterialVariant.MetalnessMapContent
 MaterialVariant.NormalMapContent
 MaterialVariant.RoughnessMapContent
+MaterialVariant.TexturePackContent
 
 MeshPart.MeshContent
 MeshPart.TextureContent
@@ -55,6 +66,8 @@ PackageLink.PackageContent
 PackageLink.PackageContentSerialize
 
 Pants.PantsTemplateContent
+
+PartOperation.Content
 
 ParticleEmitter.TextureContent
 
@@ -86,12 +99,14 @@ SurfaceAppearance.EmissiveMaskContent
 SurfaceAppearance.MetalnessMapContent
 SurfaceAppearance.NormalMapContent
 SurfaceAppearance.RoughnessMapContent
+SurfaceAppearance.TexturePackContent
 
 TerrainDetail.ColorMapContent
 TerrainDetail.EmissiveMaskContent
 TerrainDetail.MetalnessMapContent
 TerrainDetail.NormalMapContent
 TerrainDetail.RoughnessMapContent
+TerrainDetail.TexturePackContent
 
 Trail.TextureContent
 
@@ -107,6 +122,7 @@ VideoPlayer.VideoContent
 VideoSampler.VideoContent
 
 WrapLayer.ReferenceMeshContent
+WrapLayer.TemporaryReferenceMeshContent
 
 WrapTextureTransfer.ReferenceCageMeshContent
 
